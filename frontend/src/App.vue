@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 
 // Component data definition
 const available_components = ref([
@@ -9,6 +9,7 @@ const available_components = ref([
     { name: 'Ethane', formula: 'C₂H₆', chineseName: '乙烷' },
     { name: 'Propane', formula: 'C₃H₈', chineseName: '丙烷' },
     { name: 'Water', formula: 'H₂O', chineseName: '水' },
+    { name: 'Hydrogen', formula: 'H₂', chineseName: '氢气' },
     { name: 'HydrogenSulfide', formula: 'H₂S', chineseName: '硫化氢' },
     { name: 'CarbonMonoxide', formula: 'CO', chineseName: '一氧化碳' },
     { name: 'Oxygen', formula: 'O₂', chineseName: '氧气' },
@@ -36,14 +37,29 @@ const defaultValues = [
   { name: 'Hexane', fraction: 0.000249 },
 ];
 
-// Input data refs
-const T = ref(298.15);
-const P_kPa = ref(101.325);
+const component_map = computed(() => {
+  return available_components.value.reduce((map, comp) => {
+    map[comp.name] = comp;
+    return map;
+  }, {});
+});
+
+// --- 工况参数 ---
+const T_work = ref(350.0);
+const P_work_kPa = ref(10000.0);
+const Q_work = ref(1000.0);
+
+// --- 标况参数 ---
+const T_base = ref(293.15);
+const P_base_kPa = ref(101.325);
+
 const hydrogen_fraction = ref(0.0);
 const base_components = ref(JSON.parse(JSON.stringify(defaultValues)));
 
 // State refs
-const result = ref(null);
+const result_work = ref(null);
+const result_base = ref(null);
+const Q_base = ref(null);
 const error = ref(null);
 const loading = ref(false);
 
@@ -63,37 +79,67 @@ function loadDefaultValues() {
 
 async function calculate() {
   loading.value = true;
-  result.value = null;
+  result_work.value = null;
+  result_base.value = null;
+  Q_base.value = null;
   error.value = null;
 
-  const payload = {
-    T: T.value,
-    P_kPa: P_kPa.value,
+  const componentsPayload = base_components.value.reduce((acc, comp) => {
+    if (comp.name && comp.fraction > 0) {
+      acc[comp.name] = comp.fraction;
+    }
+    return acc;
+  }, {});
+
+  const payload_work = {
+    T: T_work.value,
+    P_kPa: P_work_kPa.value,
     hydrogen_fraction: hydrogen_fraction.value,
-    base_components: base_components.value.reduce((acc, comp) => {
-      if (comp.name && comp.fraction > 0) {
-        acc[comp.name] = comp.fraction;
-      }
-      return acc;
-    }, {}),
+    base_components: componentsPayload,
+  };
+
+  const payload_base = {
+    T: T_base.value,
+    P_kPa: P_base_kPa.value,
+    hydrogen_fraction: hydrogen_fraction.value,
+    base_components: componentsPayload,
   };
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/calculate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+    const [response_work, response_base] = await Promise.all([
+      fetch('http://127.0.0.1:8000/calculate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload_work),
+      }),
+      fetch('http://127.0.0.1:8000/calculate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload_base),
+      })
+    ]);
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    if (!response_work.ok) {
+      const errorData = await response_work.json();
+      throw new Error(`工况计算错误: ${errorData.detail || `HTTP error! status: ${response_work.status}`}`);
+    }
+    if (!response_base.ok) {
+      const errorData = await response_base.json();
+      throw new Error(`标况计算错误: ${errorData.detail || `HTTP error! status: ${response_base.status}`}`);
     }
 
-    const data = await response.json();
-    result.value = data;
+    const data_work = await response_work.json();
+    const data_base = await response_base.json();
+
+    result_work.value = data_work;
+    result_base.value = data_base;
+
+    // Calculate standard flow
+    const z_work = data_work.compression_factor;
+    const z_base = data_base.compression_factor;
+    if (z_work && z_base && P_base_kPa.value > 0 && T_work.value > 0) {
+        Q_base.value = Q_work.value * (P_work_kPa.value / P_base_kPa.value) * (T_base.value / T_work.value) * (z_base / z_work);
+    }
 
   } catch (e) {
     error.value = e.message;
@@ -114,14 +160,32 @@ async function calculate() {
           <div class="card-header">
             <h2>输入参数</h2>
           </div>
-          <div class="input-group">
-            <label for="temperature">温度 (K)</label>
-            <input id="temperature" type="number" v-model.number="T" />
-          </div>
-          <div class="input-group">
-            <label for="pressure">压力 (kPa)</label>
-            <input id="pressure" type="number" v-model.number="P_kPa" />
-          </div>
+         <fieldset class="conditions-group">
+             <legend>工况参数</legend>
+             <div class="input-group">
+               <label for="temp_work">工况温度 (K)</label>
+               <input id="temp_work" type="number" v-model.number="T_work" />
+             </div>
+             <div class="input-group">
+               <label for="pressure_work">工况压力 (kPa)</label>
+               <input id="pressure_work" type="number" v-model.number="P_work_kPa" />
+             </div>
+             <div class="input-group">
+               <label for="flow_work">工况流量 (m³/h)</label>
+               <input id="flow_work" type="number" v-model.number="Q_work" />
+             </div>
+         </fieldset>
+         <fieldset class="conditions-group">
+             <legend>标况参数</legend>
+             <div class="input-group">
+               <label for="temp_base">标况温度 (K)</label>
+               <input id="temp_base" type="number" v-model.number="T_base" />
+             </div>
+             <div class="input-group">
+               <label for="pressure_base">标况压力 (kPa)</label>
+               <input id="pressure_base" type="number" v-model.number="P_base_kPa" />
+             </div>
+         </fieldset>
           <div class="input-group">
             <label for="hydrogen">氢气摩尔分数 (0-1)</label>
             <input id="hydrogen" type="number" v-model.number="hydrogen_fraction" step="0.01" />
@@ -163,19 +227,24 @@ async function calculate() {
             <h3>错误</h3>
             <p>{{ error }}</p>
           </div>
-          <div v-if="result" class="result-content">
-            <p class="result-main"><strong>压缩因子 (Z):</strong> <span>{{ result.compression_factor?.toFixed(6) }}</span></p>
-            <h3>最终组分比例:</h3>
-            <ul class="result-list">
-              <li v-for="(frac, comp) in result.final_components" :key="comp">
-                <span>{{ comp }}</span>
-                <span>{{ frac.toFixed(6) }}</span>
-              </li>
-            </ul>
-          </div>
-           <div v-if="!result && !error && !loading" class="placeholder-text">
-            <p>点击“计算”后，结果将在此处显示。</p>
-          </div>
+         <div v-if="result_work" class="result-content">
+           <div class="result-grid">
+               <p class="result-item"><strong>工况 Z 因子:</strong> <span>{{ result_work.compression_factor?.toFixed(6) }}</span></p>
+               <p class="result-item"><strong>标况 Z 因子:</strong> <span>{{ result_base?.compression_factor?.toFixed(6) }}</span></p>
+               <p class="result-item result-item-full"><strong>标况流量 (Nm³/h):</strong> <span>{{ Q_base?.toFixed(4) }}</span></p>
+           </div>
+
+           <h3>最终组分比例:</h3>
+           <ul class="result-list">
+             <li v-for="(frac, comp) in result_work.final_components" :key="comp">
+               <span>{{ component_map[comp] ? `${component_map[comp].chineseName} (${component_map[comp].formula})` : comp }}</span>
+               <span>{{ frac.toFixed(6) }}</span>
+             </li>
+           </ul>
+         </div>
+          <div v-if="!result_work && !error && !loading" class="placeholder-text">
+           <p>点击“计算”后，结果将在此处显示。</p>
+         </div>
         </div>
       </div>
     </div>
@@ -310,18 +379,34 @@ async function calculate() {
       padding: 0.6rem 1rem;
     }
     
-    .result-content .result-main {
-      font-size: 1.5rem;
-      font-weight: 600;
-      padding: 1rem;
-      background-color: #e9f7ef;
-      border-radius: 8px;
-      text-align: center;
-      margin-bottom: 1.5rem;
+    .result-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin-bottom: 2rem;
     }
-    
-    .result-main span {
+    .result-item {
+        font-size: 1.1rem;
+        font-weight: 500;
+        padding: 1rem;
+        background-color: #e9f7ef;
+        border-radius: 8px;
+        text-align: center;
+        margin: 0;
+    }
+    .result-item strong {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+        color: #343a40;
+    }
+    .result-item span {
+        font-size: 1.3rem;
+        font-weight: 600;
         color: var(--success-color);
+    }
+    .result-item-full {
+        grid-column: 1 / -1;
     }
     
     .result-list {
@@ -353,5 +438,17 @@ async function calculate() {
         text-align: center;
         color: #6c757d;
         padding: 4rem 1rem;
+    }
+    .conditions-group {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .conditions-group legend {
+      font-weight: 600;
+      padding: 0 0.5rem;
+      margin-left: 1rem;
+      color: var(--text-color);
     }
 </style>
