@@ -107,12 +107,12 @@ async function calculate() {
 
   try {
     const [response_work, response_base] = await Promise.all([
-      fetch('http://127.0.0.1:8000/calculate', {
+      fetch('/api/gerg-calculator/calculate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload_work),
       }),
-      fetch('http://127.0.0.1:8000/calculate', {
+      fetch('/api/gerg-calculator/calculate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload_base),
