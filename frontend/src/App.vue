@@ -56,6 +56,18 @@ const P_base_kPa = ref(101.325);
 const hydrogen_fraction = ref(0.0);
 const base_components = ref(JSON.parse(JSON.stringify(defaultValues)));
 
+const total_fraction = computed(() => {
+  const base_sum = base_components.value.reduce((sum, comp) => sum + (Number(comp.fraction) || 0), 0);
+  const hydro_frac = Number(hydrogen_fraction.value) || 0;
+  return base_sum + hydro_frac;
+});
+
+const is_fraction_valid = computed(() => {
+    // Check if the total fraction is close to 1
+    return Math.abs(total_fraction.value - 1.0) < 1e-6;
+});
+
+
 // State refs
 const result_work = ref(null);
 const result_base = ref(null);
@@ -84,6 +96,12 @@ async function calculate() {
   Q_base.value = null;
   error.value = null;
 
+  if (!is_fraction_valid.value) {
+    error.value = `摩尔分数总和必须为1，但当前为 ${total_fraction.value.toFixed(6)}。请检查输入值。`;
+    loading.value = false;
+    return;
+  }
+
   const componentsPayload = base_components.value.reduce((acc, comp) => {
     if (comp.name && comp.fraction > 0) {
       acc[comp.name] = comp.fraction;
@@ -91,17 +109,24 @@ async function calculate() {
     return acc;
   }, {});
 
+  const hydro_frac = Number(hydrogen_fraction.value) || 0;
+  if (hydro_frac < 0 || hydro_frac > 1) {
+      error.value = "氢气摩尔分数必须在 0 和 1 之间。";
+      loading.value = false;
+      return;
+  }
+
   const payload_work = {
     T: T_work.value,
     P_kPa: P_work_kPa.value,
-    hydrogen_fraction: hydrogen_fraction.value,
+    hydrogen_fraction: hydro_frac,
     base_components: componentsPayload,
   };
 
   const payload_base = {
     T: T_base.value,
     P_kPa: P_base_kPa.value,
-    hydrogen_fraction: hydrogen_fraction.value,
+    hydrogen_fraction: hydro_frac,
     base_components: componentsPayload,
   };
 
@@ -209,7 +234,16 @@ async function calculate() {
           </div>
           <button @click="addComponent" class="add-btn">添加组分</button>
         </div>
-         <button @click="calculate" class="calculate-btn" :disabled="loading">
+        <div class="card-footer">
+            <p>
+              <strong>总摩尔分数:</strong>
+              <span :class="{'fraction-error': !is_fraction_valid}">{{ total_fraction.toFixed(6) }}</span>
+            </p>
+            <p v-if="!is_fraction_valid" class="fraction-error-message">
+              总摩尔分数必须接近1。
+            </p>
+          </div>
+         <button @click="calculate" class="calculate-btn" :disabled="loading || !is_fraction_valid">
             {{ loading ? '计算中...' : '计 算' }}
           </button>
       </div>
@@ -450,5 +484,19 @@ async function calculate() {
       padding: 0 0.5rem;
       margin-left: 1rem;
       color: var(--text-color);
+    }
+    .card-footer {
+      padding-top: 1rem;
+      margin-top: 1rem;
+      border-top: 1px solid var(--border-color);
+    }
+    .fraction-error {
+        color: var(--danger-color);
+        font-weight: bold;
+    }
+    .fraction-error-message {
+        color: var(--danger-color);
+        font-size: 0.9rem;
+        margin-top: 0.5rem;
     }
 </style>
